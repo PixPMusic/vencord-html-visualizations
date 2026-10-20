@@ -119,10 +119,12 @@ export function createExcordVisualizationsPlugin(
     html,
     title,
     messageId,
+    onReady,
   }: {
     html: string;
     title: string;
     messageId?: string;
+    onReady?: () => void;
   }) {
     const { React } = common;
     const ref = React.useRef<HTMLIFrameElement>(null);
@@ -137,7 +139,12 @@ export function createExcordVisualizationsPlugin(
       // Read the mounted message's scope before any authored script runs.
       let mounted = true;
       void embedHtmlFonts(readHtmlTheme(host())).then((theme) => {
-        if (mounted) setSrcDoc(htmlDocument(html, theme, readHtmlNonces()));
+        if (mounted) {
+          // Chromium gives a frame an opaque canvas if its color scheme differs
+          // from the embedding element, even with a transparent page background.
+          if (ref.current) ref.current.style.colorScheme = theme.appearance;
+          setSrcDoc(htmlDocument(html, theme, readHtmlNonces()));
+        }
       });
       return () => {
         mounted = false;
@@ -146,8 +153,10 @@ export function createExcordVisualizationsPlugin(
     const sendTheme = () => {
       const generation = ++themeGeneration.current;
       void embedHtmlFonts(readHtmlTheme(host())).then((theme) => {
-        if (generation === themeGeneration.current)
+        if (generation === themeGeneration.current) {
+          if (ref.current) ref.current.style.colorScheme = theme.appearance;
           ref.current?.contentWindow?.postMessage(htmlThemeMessage(theme), "*");
+        }
       });
     };
     React.useLayoutEffect(() => {
@@ -158,7 +167,10 @@ export function createExcordVisualizationsPlugin(
         )
           return;
         const next = htmlContentHeight(event.data);
-        if (next !== undefined) setHeight(next);
+        if (next !== undefined) {
+          setHeight(next);
+          onReady?.();
+        }
         const request = htmlLinkRequest(event.data);
         if (
           request &&
@@ -236,9 +248,11 @@ export function createExcordVisualizationsPlugin(
   function Visualization({
     source,
     messageId,
+    onReady,
   }: {
     source: HtmlSource;
     messageId: string;
+    onReady: () => void;
   }) {
     const { React } = common;
     const inline = "html" in source ? source.html : undefined;
@@ -273,7 +287,12 @@ export function createExcordVisualizationsPlugin(
     }, [url]);
     const html = inline ?? (loaded?.url === url ? loaded?.html : undefined);
     return html !== undefined ? (
-      <Frame html={html} title={source.title} messageId={messageId} />
+      <Frame
+        html={html}
+        title={source.title}
+        messageId={messageId}
+        onReady={onReady}
+      />
     ) : (
       <p role="status">
         {(loaded?.url === url && loaded?.error) ||
@@ -347,32 +366,71 @@ export function createExcordVisualizationsPlugin(
       { updateMessage(channelId: string, messageId: string): void } | undefined;
     if (channelId && updater)
       common.MessageStore?.getMessages?.(channelId).forEach((message) => {
-        if (htmlSources(message).some((source) => "html" in source))
+        if (htmlSources(message).length)
           updater.updateMessage(channelId, message.id);
       });
   }
 
-  function Accessory({ message }: { message: HtmlMessage }) {
+  function Attachments({
+    message,
+    renderNative,
+  }: {
+    message: HtmlMessage;
+    renderNative: (message: HtmlMessage) => ReactTypes.ReactNode;
+  }) {
     const { React } = common;
     const filters = settings.use();
     const active = React.useSyncExternalStore(subscribe, () => running);
-    if (
-      !active ||
-      !filters.enabled ||
-      !allowsHtml(
+    const [ready, setReady] = React.useState<Set<string>>(() => new Set());
+    const eligible =
+      active &&
+      filters.enabled &&
+      allowsHtml(
         message,
         common.ChannelStore.getChannel(message.channel_id),
         filters,
-      )
-    )
-      return null;
+      );
+    React.useEffect(() => {
+      if (!eligible)
+        setReady((previous) => (previous.size ? new Set() : previous));
+    }, [eligible]);
+    if (!eligible) return renderNative(message);
+    const sources = htmlSources({ ...message, content: "" });
+    const rendered = new Set(
+      sources
+        .filter(
+          (source) =>
+            "url" in source && ready.has(`${source.key}:${source.url}`),
+        )
+        .map((source) => source.key),
+    );
+    const attachments = message.attachments?.filter(
+      (attachment) => !rendered.has(`attachment-${attachment.id}`),
+    );
+    // Preserve Discord's message record and never edit the cached message.
+    const nativeMessage =
+      attachments?.length === message.attachments?.length
+        ? message
+        : ((
+            message as HtmlMessage & {
+              merge?: (fields: Pick<HtmlMessage, "attachments">) => HtmlMessage;
+            }
+          ).merge?.({ attachments }) ?? { ...message, attachments });
     return (
       <>
-        {htmlSources({ ...message, content: "" }).map((source) => (
+        {renderNative(nativeMessage)}
+        {sources.map((source) => (
           <Visualization
-            key={`${message.id}-${source.key}`}
+            key={`${source.key}:${"url" in source ? source.url : ""}`}
             source={source}
             messageId={message.id}
+            onReady={() => {
+              if (!("url" in source)) return;
+              const key = `${source.key}:${source.url}`;
+              setReady((previous) =>
+                previous.has(key) ? previous : new Set(previous).add(key),
+              );
+            }}
           />
         ))}
       </>
@@ -386,6 +444,16 @@ export function createExcordVisualizationsPlugin(
     authors: [{ name: "Excord", id: 0n }],
     enabledByDefault: false,
     dependencies: ["MessageUpdaterAPI"],
+    patches: [
+      {
+        find: "this.renderAttachments(",
+        replacement: {
+          match: /this\.renderAttachments\(([A-Za-z_$][\w$]*)\)/g,
+          replace:
+            "$self.renderAttachments($1,excordMessage=>this.renderAttachments(excordMessage))",
+        },
+      },
+    ],
     settings,
     start() {
       updateRunning(true);
@@ -408,7 +476,14 @@ export function createExcordVisualizationsPlugin(
       restoreCodeBlocks = undefined;
       installedParser = undefined;
     },
-    renderMessageAccessory: (props: { message: HtmlMessage }) =>
-      common.React.createElement(Accessory, props),
+    renderAttachments: (
+      message: HtmlMessage,
+      renderNative: (message: HtmlMessage) => ReactTypes.ReactNode,
+    ) =>
+      common.React.createElement(Attachments, {
+        message,
+        renderNative,
+        key: message.id,
+      }),
   };
 }

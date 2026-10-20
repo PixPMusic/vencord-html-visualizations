@@ -11,6 +11,28 @@ const channel = { guild_id: "300", parent_id: "400", isThread: () => true };
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; mock.restore(); });
 
+test("the attachment patch wraps Discord's native slot without losing its receiver or editing the message", () => {
+    const plugin = createExcordVisualizationsPlugin({
+        "@api/Settings": { definePluginSettings: () => ({}) },
+        "@utils/types": { OptionType: {} },
+        "@webpack/common": { React: { createElement: (_component, props) => props } }
+    });
+    const source = "return class { renderAttachments(e){return {receiver:this,files:e.attachments}} render(e){const n=this.renderAttachments(e);return n} }";
+    const patch = plugin.patches[0];
+    expect(source).toContain(patch.find);
+    const transformed = source.replace(patch.replacement.match, patch.replacement.replace).replaceAll("$self", "plugin");
+    const Renderer = new Function("plugin", transformed)(plugin);
+    const renderer = new Renderer();
+    const original = { ...message, attachments: [{ id: "html", filename: "chart.html" }, { id: "text", filename: "notes.txt" }] };
+    const wrapped = renderer.render(original);
+    expect(wrapped.message).toBe(original);
+    const filtered = { ...original, attachments: original.attachments.slice(1) };
+    const native = wrapped.renderNative(filtered);
+    expect(native.receiver).toBe(renderer);
+    expect(native.files).toBe(filtered.attachments);
+    expect(original.attachments).toHaveLength(2);
+});
+
 test("HTML blocks replace native code in place; other languages and disabled rendering retain native output", () => {
     const native = mock(node => `native:${node.content}`);
     const parser = { defaultRules: { codeBlock: { react: native } } };

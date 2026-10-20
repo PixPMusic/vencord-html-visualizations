@@ -432,6 +432,18 @@ export function htmlDocument(
 (() => {
     const style = document.getElementById("excord-html-theme");
     const fonts = new Map();
+    function adaptT3Defaults() {
+        // Prepared exports regenerate this base rule on each host theme update.
+        // Edit only T3's defaults, leaving the page's own styles untouched.
+        const sheet = document.getElementById("t3-theme")?.sheet;
+        if (!sheet) return;
+        for (const rule of sheet.cssRules) {
+            if (rule.selectorText !== "html") continue;
+            for (const property of ["background", "background-color", "font-size", "line-height"])
+                rule.style.removeProperty(property);
+        }
+    }
+    new MutationObserver(adaptT3Defaults).observe(document.head, { childList: true, subtree: true, characterData: true });
     function apply(message) {
         if (message?.jsonrpc !== "2.0" || message.method !== "${HTML_THEME_METHOD}") return;
         const params = message.params;
@@ -455,7 +467,7 @@ export function htmlDocument(
         const root = document.documentElement;
         root.style.colorScheme = params.theme === "light" ? "light" : "dark";
         for (const [key, value] of variables) root.style.setProperty(key, value.replace(/[;{}<>]/g, ""));
-        style.textContent = (typeof params.styles.fontFaces === "string" ? params.styles.fontFaces : "") + "\\nhtml{background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:var(--chat-font-size);font-weight:var(--chat-font-weight);font-style:var(--chat-font-style);line-height:var(--chat-line-height);letter-spacing:var(--chat-letter-spacing)}body{margin:0;font:inherit}button,input,select,textarea{font:inherit}";
+        style.textContent = (typeof params.styles.fontFaces === "string" ? params.styles.fontFaces : "") + "\\nhtml{background:transparent;color:var(--foreground);font-family:var(--font-sans);font-size:var(--chat-font-size);font-weight:var(--chat-font-weight);font-style:var(--chat-font-style);line-height:var(--chat-line-height);letter-spacing:var(--chat-letter-spacing)}body{margin:0;font:inherit}button,input,select,textarea{font:inherit}";
     }
     apply(${initial});
     addEventListener("message", event => { if (event.source === parent) apply(event.data); });
@@ -486,6 +498,7 @@ export function htmlDocument(
         });
     }
     addEventListener("DOMContentLoaded", () => {
+        adaptT3Defaults();
         const observer = new ResizeObserver(measure);
         observer.observe(document.documentElement);
         if (document.body) observer.observe(document.body);
