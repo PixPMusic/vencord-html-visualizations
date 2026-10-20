@@ -1,13 +1,13 @@
 import * as React from "react";
 import { createRoot } from "react-dom/client";
 
-import { createHtmlVisualizationsPlugin } from "../../src/excord/htmlVisualizationsPlugin";
+import { createExcordVisualizationsPlugin } from "../../src/excord/visualizations";
 import type { HtmlFilters, HtmlMessage } from "../../src/excord/htmlVisualizations";
 
 let filters: HtmlFilters & { enabled: boolean } = { enabled: true, onlyBots: true, allowedUsers: "", allowedChannels: "", allowedGuilds: "" };
 const listeners = new Set<() => void>();
 const channel = { guild_id: "300", parent_id: "400", isThread: () => true };
-const plugin = createHtmlVisualizationsPlugin({
+const plugin = createExcordVisualizationsPlugin({
     "@api/Settings": { definePluginSettings: () => ({ use: () => React.useSyncExternalStore(listener => { listeners.add(listener); return () => { listeners.delete(listener); }; }, () => filters) }) },
     "@utils/types": { OptionType: { BOOLEAN: 1, STRING: 2 } },
     "@webpack/common": { React, ChannelStore: { getChannel: () => channel } }

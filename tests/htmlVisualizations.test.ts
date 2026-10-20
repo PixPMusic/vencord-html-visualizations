@@ -2,7 +2,7 @@ import { afterEach, expect, mock, test } from "bun:test";
 
 import { htmlContentHeight, htmlLinkRequest } from "../src/excord/htmlFrame";
 import { allowsHtml, discordHtmlAttachmentUrl, fetchHtmlAttachment, htmlSources, MAX_HTML_BYTES, type HtmlFilters, type HtmlMessage } from "../src/excord/htmlVisualizations";
-import { createHtmlVisualizationsPlugin } from "../src/excord/htmlVisualizationsPlugin";
+import { createExcordVisualizationsPlugin } from "../src/excord/visualizations";
 
 const filters: HtmlFilters = { onlyBots: false, allowedUsers: "", allowedChannels: "", allowedGuilds: "" };
 const message: HtmlMessage = { id: "1", channel_id: "200", author: { id: "100", bot: true } };
@@ -78,11 +78,12 @@ test("T3 link requests accept only HTTP destinations and valid request IDs", () 
 
 test("the optional plugin registers before React and stores initialize", () => {
     let definition: Record<string, { default: unknown; multiline?: boolean }> = {};
-    const plugin = createHtmlVisualizationsPlugin({
+    const plugin = createExcordVisualizationsPlugin({
         "@api/Settings": { definePluginSettings: (def: typeof definition) => { definition = def; return {}; } },
         "@utils/types": { OptionType: { BOOLEAN: 1, STRING: 2 } },
         "@webpack/common": {}
     });
+    expect(plugin.name).toBe("ExcordVisualizations");
     expect(plugin.enabledByDefault).toBe(false);
     expect(definition.onlyBots.default).toBe(true);
     for (const key of ["allowedUsers", "allowedChannels", "allowedGuilds"]) {

@@ -43,7 +43,7 @@ interface SettingsApi {
   ): HtmlSettings;
 }
 
-export function createHtmlVisualizationsPlugin(
+export function createExcordVisualizationsPlugin(
   modules: Record<string, unknown>,
 ) {
   const { definePluginSettings } = modules["@api/Settings"] as SettingsApi;
@@ -289,7 +289,7 @@ export function createHtmlVisualizationsPlugin(
   }
 
   return {
-    name: "HtmlVisualizations",
+    name: "ExcordVisualizations",
     description:
       "Render interactive HTML code blocks and attachments, including pages exported from T3 Code.",
     authors: [{ name: "Excord", id: 0n }],

@@ -1,6 +1,6 @@
-# HTML visualizations
+# ExcordVisualizations
 
-Enable **HtmlVisualizations** in Discord Settings → Plugins. It is bundled with Excord and disabled by default. It adds an interactive preview below HTML code blocks and uploaded `.html` or `.htm` files. The original message and attachment remain available. Use **Hide visualization** to unload a preview.
+Enable **ExcordVisualizations** in Discord Settings → Plugins. It is bundled with Excord and disabled by default. It adds an interactive preview below HTML code blocks and uploaded `.html` or `.htm` files. The original message and attachment remain available. Use **Hide visualization** to unload a preview.
 
 The settings follow MessageLogger's multiline, comma-separated ID fields:
 
