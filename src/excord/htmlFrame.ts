@@ -15,6 +15,134 @@ export const HTML_CSP =
 export interface HtmlTheme {
   appearance: "light" | "dark";
   variables: Record<string, string>;
+  fontFaces?: string;
+  fonts?: { family: string; data: string; descriptors: FontFaceDescriptors }[];
+}
+
+// Font faces are scoped to a document. Copy the chat font's definitions so gg sans
+// resolves inside the sandbox too, preserving relative URLs from Discord's CSS.
+function readChatFontFaces(fontFamily: string) {
+  const normalize = (family: string) =>
+    family
+      .trim()
+      .replace(/^["']|["']$/g, "")
+      .toLowerCase();
+  const families = new Set(fontFamily.split(",").map(normalize));
+  const faces = new Set<string>();
+  const visited = new Set<CSSStyleSheet>();
+  function visit(sheet: CSSStyleSheet) {
+    if (visited.has(sheet) || sheet.disabled) return;
+    visited.add(sheet);
+    try {
+      for (const rule of sheet.cssRules) {
+        if (rule instanceof CSSImportRule && rule.styleSheet)
+          visit(rule.styleSheet);
+        if (
+          !(rule instanceof CSSFontFaceRule) ||
+          !families.has(normalize(rule.style.getPropertyValue("font-family")))
+        )
+          continue;
+        faces.add(
+          rule.cssText.replace(
+            /url\(\s*(["']?)([^)'"\s]+)\1\s*\)/gi,
+            (_match, _quote, url: string) => {
+              try {
+                return `url(${JSON.stringify(new URL(url, sheet.href || document.baseURI).href)})`;
+              } catch {
+                return 'url("")';
+              }
+            },
+          ),
+        );
+      }
+    } catch {
+      /* Cross-origin theme sheets cannot be inspected. */
+    }
+  }
+  for (const sheet of document.styleSheets) visit(sheet);
+  for (const sheet of document.adoptedStyleSheets) visit(sheet);
+  return [...faces].join("\n");
+}
+
+const fontData = new Map<string, Promise<string>>();
+
+// Discord fonts do not allow CORS from an opaque origin. Read only public font
+// assets through the host, cache them, and embed their bytes in the isolated page.
+export async function embedHtmlFonts(theme: HtmlTheme): Promise<HtmlTheme> {
+  const css = theme.fontFaces || "";
+  const urls = [
+    ...new Set([...css.matchAll(/url\("([^"]+)"\)/g)].map((match) => match[1])),
+  ];
+  const embedded = new Map<string, string>();
+  await Promise.all(
+    urls.map(async (value) => {
+      const url = new URL(value, document.baseURI);
+      if (
+        !/^https:$/.test(url.protocol) ||
+        !["discord.com", "canary.discord.com", "ptb.discord.com"].includes(
+          url.hostname,
+        ) ||
+        !/^\/assets\/[\w-]+\.(?:woff2?|ttf|otf)$/.test(url.pathname) ||
+        url.port ||
+        url.username ||
+        url.password ||
+        url.search
+      )
+        return;
+      let promise = fontData.get(url.href);
+      if (!promise) {
+        promise = fetch(url.href, {
+          credentials: "omit",
+          redirect: "error",
+          signal: AbortSignal.timeout(5000),
+        }).then(async (response) => {
+          if (!response.ok) throw new Error("Chat font unavailable");
+          const bytes = await response.arrayBuffer();
+          if (bytes.byteLength > 2 * 1024 * 1024)
+            throw new Error("Chat font too large");
+          return await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(new Blob([bytes], { type: "font/woff2" }));
+          });
+        });
+        fontData.set(url.href, promise);
+      }
+      try {
+        embedded.set(value, await promise);
+      } catch {
+        fontData.delete(url.href);
+      }
+    }),
+  );
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(css);
+  const fonts: NonNullable<HtmlTheme["fonts"]> = [];
+  const remaining: string[] = [];
+  for (const rule of sheet.cssRules) {
+    if (!(rule instanceof CSSFontFaceRule)) continue;
+    const data = [...rule.cssText.matchAll(/url\("([^"]+)"\)/g)]
+      .map((match) => embedded.get(match[1]))
+      .find(Boolean);
+    if (!data) {
+      remaining.push(rule.cssText);
+      continue;
+    }
+    const { style } = rule;
+    fonts.push({
+      family: style.getPropertyValue("font-family").replace(/^["']|["']$/g, ""),
+      data: data.slice(data.indexOf(",") + 1),
+      descriptors: {
+        weight: style.getPropertyValue("font-weight") || "normal",
+        style: style.getPropertyValue("font-style") || "normal",
+        stretch: style.getPropertyValue("font-stretch") || "normal",
+        unicodeRange: style.getPropertyValue("unicode-range") || "U+0-10FFFF",
+        display: "swap",
+      },
+    });
+  }
+  return { ...theme, fontFaces: remaining.join("\n"), fonts };
 }
 
 export function readHtmlTheme(
@@ -45,10 +173,9 @@ export function readHtmlTheme(
     ["--background-base-lower", "--background-primary"],
     light ? "#ffffff" : "#313338",
   );
-  const foreground = token(
-    ["--text-default", "--text-normal"],
-    light ? "#313338" : "#dbdee1",
-  );
+  const foreground =
+    style.color ||
+    token(["--text-default", "--text-normal"], light ? "#313338" : "#dbdee1");
   const surface = token(
     ["--background-surface-high", "--background-secondary"],
     light ? "#f2f3f5" : "#2b2d31",
@@ -139,8 +266,14 @@ export function readHtmlTheme(
     ),
     "--code-foreground": foreground,
     "--radius": token(["--radius-md"], "8px"),
-    "--font-sans": token(["--font-primary"], "system-ui, sans-serif"),
+    "--font-sans":
+      style.fontFamily || token(["--font-primary"], "system-ui, sans-serif"),
     "--font-mono": token(["--font-code"], "monospace"),
+    "--chat-font-size": style.fontSize || "16px",
+    "--chat-font-weight": style.fontWeight || "400",
+    "--chat-font-style": style.fontStyle || "normal",
+    "--chat-line-height": style.lineHeight || "normal",
+    "--chat-letter-spacing": style.letterSpacing || "normal",
   };
   [
     accent,
@@ -152,14 +285,25 @@ export function readHtmlTheme(
   ].forEach((value, index) => {
     variables[`--chart-${index + 1}`] = value;
   });
-  return { appearance, variables };
+  return {
+    appearance,
+    variables,
+    fontFaces: readChatFontFaces(variables["--font-sans"]),
+  };
 }
 
 export function htmlThemeMessage(theme: HtmlTheme) {
   return {
     jsonrpc: "2.0",
     method: HTML_THEME_METHOD,
-    params: { theme: theme.appearance, styles: { variables: theme.variables } },
+    params: {
+      theme: theme.appearance,
+      styles: {
+        variables: theme.variables,
+        fontFaces: theme.fontFaces,
+        fonts: theme.fonts,
+      },
+    },
   };
 }
 
@@ -217,26 +361,101 @@ export function htmlLinkRequest(
   }
 }
 
-export function htmlDocument(html: string, theme: HtmlTheme) {
+export function readHtmlNonces() {
+  const script =
+    document.querySelector<HTMLScriptElement>("script[nonce]")?.nonce || "";
+  const style =
+    document.querySelector<HTMLStyleElement>("style[nonce]")?.nonce || script;
+  return { script, style };
+}
+
+// Read only tags, skipping comments and raw script/style contents. Never parse HTML
+// in the host document, where image and frame requests could run outside the sandbox.
+export function withHtmlNonces(
+  html: string,
+  nonces: { script?: string; style?: string },
+) {
+  const tags =
+    /<!--[\s\S]*?(?:-->|$)|<![^>]*>|<([a-z][a-z0-9:-]*)\b((?:"[^"]*"|'[^']*'|[^'">])*)>/gi;
+  let result = "";
+  let last = 0;
+  for (let match; (match = tags.exec(html));) {
+    if (!match[1]) continue;
+    const tag = match[1].toLowerCase();
+    const nonce = tag === "script" || tag === "style" ? nonces[tag] : undefined;
+    if (nonce) {
+      const escaped = nonce.replace(
+        /[&"<>]/g,
+        (value) =>
+          ({ "&": "&amp;", '"': "&quot;", "<": "&lt;", ">": "&gt;" })[value]!,
+      );
+      result +=
+        html.slice(last, match.index) +
+        `<${match[1]} nonce="${escaped}"${match[2]}>`;
+      last = tags.lastIndex;
+    }
+    if (tag === "plaintext") break;
+    if (
+      ![
+        "script",
+        "style",
+        "textarea",
+        "title",
+        "xmp",
+        "iframe",
+        "noembed",
+        "noframes",
+      ].includes(tag)
+    )
+      continue;
+    const close = new RegExp(`</${tag}(?=[\\s/>])[^>]*>`, "gi");
+    close.lastIndex = tags.lastIndex;
+    const closing = close.exec(html);
+    tags.lastIndex = closing ? close.lastIndex : html.length;
+  }
+  return result + html.slice(last);
+}
+
+export function htmlDocument(
+  html: string,
+  theme: HtmlTheme,
+  nonces: { script?: string; style?: string } = {},
+) {
   // Put our policy first, before any author-controlled markup, including malformed heads.
   // The browser merges a later complete document into this document during parsing.
   const initial = JSON.stringify(htmlThemeMessage(theme)).replace(
     /</g,
     "\\u003c",
   );
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${HTML_CSP}"><style id="excord-html-theme"></style><script>
+  return withHtmlNonces(
+    `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${HTML_CSP}"><style id="excord-html-theme"></style><script>
 (() => {
     const style = document.getElementById("excord-html-theme");
+    const fonts = new Map();
     function apply(message) {
         if (message?.jsonrpc !== "2.0" || message.method !== "${HTML_THEME_METHOD}") return;
         const params = message.params;
         if (!params?.styles?.variables) return;
+        // Binary FontFace sources need no network request from the opaque frame.
+        // Discord's inherited policy blocks data URLs as well as cross-origin fonts.
+        for (const font of params.styles.fonts || []) {
+            const key = JSON.stringify([font.family, font.descriptors]);
+            const previous = fonts.get(key);
+            if (previous?.data === font.data) continue;
+            try {
+                const bytes = Uint8Array.from(atob(font.data), character => character.charCodeAt(0));
+                const face = new FontFace(font.family, bytes, font.descriptors);
+                if (previous) document.fonts.delete(previous.face);
+                document.fonts.add(face);
+                fonts.set(key, { data: font.data, face });
+            } catch {}
+        }
         const variables = Object.entries(params.styles.variables).filter(([key, value]) => /^--[a-z0-9-]+$/.test(key) && typeof value === "string");
         // Inline host tokens also win over the fallback palette in prepared T3 exports.
         const root = document.documentElement;
         root.style.colorScheme = params.theme === "light" ? "light" : "dark";
         for (const [key, value] of variables) root.style.setProperty(key, value.replace(/[;{}<>]/g, ""));
-        style.textContent = "html{background:var(--background);color:var(--foreground);font-family:var(--font-sans)}body{margin:0}";
+        style.textContent = (typeof params.styles.fontFaces === "string" ? params.styles.fontFaces : "") + "\\nhtml{background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:var(--chat-font-size);font-weight:var(--chat-font-weight);font-style:var(--chat-font-style);line-height:var(--chat-line-height);letter-spacing:var(--chat-letter-spacing)}body{margin:0;font:inherit}button,input,select,textarea{font:inherit}";
     }
     apply(${initial});
     addEventListener("message", event => { if (event.source === parent) apply(event.data); });
@@ -274,5 +493,7 @@ export function htmlDocument(html: string, theme: HtmlTheme) {
     });
     addEventListener("load", measure);
 })();
-</script>${html}`;
+</script>${html}`,
+    nonces,
+  );
 }

@@ -1,14 +1,33 @@
 import { afterEach, expect, mock, test } from "bun:test";
 
-import { htmlContentHeight, htmlLinkRequest } from "../src/excord/htmlFrame";
+import { htmlContentHeight, htmlLinkRequest, withHtmlNonces } from "../src/excord/htmlFrame";
 import { allowsHtml, discordHtmlAttachmentUrl, fetchHtmlAttachment, htmlSources, MAX_HTML_BYTES, type HtmlFilters, type HtmlMessage } from "../src/excord/htmlVisualizations";
 import { createExcordVisualizationsPlugin } from "../src/excord/visualizations";
+import { replaceHtmlCodeBlocks } from "../src/excord/inlineVisualizations";
 
 const filters: HtmlFilters = { onlyBots: false, allowedUsers: "", allowedChannels: "", allowedGuilds: "" };
 const message: HtmlMessage = { id: "1", channel_id: "200", author: { id: "100", bot: true } };
 const channel = { guild_id: "300", parent_id: "400", isThread: () => true };
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; mock.restore(); });
+
+test("HTML blocks replace native code in place; other languages and disabled rendering retain native output", () => {
+    const native = mock(node => `native:${node.content}`);
+    const parser = { defaultRules: { codeBlock: { react: native } } };
+    const restore = replaceHtmlCodeBlocks(parser, (node, state, fallback) => state.messageId === "allowed" ? `frame:${node.content}` : fallback());
+    const render = parser.defaultRules.codeBlock.react;
+    expect(render({ lang: "html", content: "<p>chart</p>" }, null, { messageId: "allowed" })).toBe("frame:<p>chart</p>");
+    expect(native).not.toHaveBeenCalled();
+    expect(render({ lang: "js", content: "const x=1" }, null, { messageId: "allowed" })).toBe("native:const x=1");
+    expect(render({ lang: "html", content: "<p>source</p>" }, null, { messageId: "denied" })).toBe("native:<p>source</p>");
+    restore();
+    expect(parser.defaultRules.codeBlock.react).toBe(native);
+});
+
+test("nonce injection preserves script strings, comments, attribute examples, and raw text", () => {
+    const html = `<!-- <script>comment</script> --><div data-example="<script>attribute</script>"></div><textarea><script>example</script></textarea><script nonce="old">const example='<style>string</style>';</script><style>body{color:red}</style>`;
+    expect(withHtmlNonces(html, { script: "script-key", style: "style-key" })).toBe(`<!-- <script>comment</script> --><div data-example="<script>attribute</script>"></div><textarea><script>example</script></textarea><script nonce="script-key" nonce="old">const example='<style>string</style>';</script><style nonce="style-key">body{color:red}</style>`);
+});
 
 test("allowlists use exact IDs, OR matching, and the bot restriction applies to every list", () => {
     expect(allowsHtml(message, channel, filters)).toBe(true);

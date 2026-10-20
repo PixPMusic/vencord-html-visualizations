@@ -7,11 +7,13 @@
 import type * as ReactTypes from "react";
 
 import {
+  embedHtmlFonts,
   HTML_SANDBOX,
   htmlContentHeight,
   htmlDocument,
   htmlLinkRequest,
   htmlThemeMessage,
+  readHtmlNonces,
   readHtmlTheme,
 } from "./htmlFrame";
 import {
@@ -23,6 +25,12 @@ import {
   type HtmlSource,
   htmlSources,
 } from "./htmlVisualizations";
+import {
+  type HtmlCodeBlock,
+  type MarkdownState,
+  replaceHtmlCodeBlocks,
+  type VisualizationParser,
+} from "./inlineVisualizations";
 
 interface HtmlSettings {
   use(): HtmlFilters & { enabled: boolean };
@@ -54,6 +62,14 @@ export function createExcordVisualizationsPlugin(
   const common = modules["@webpack/common"] as {
     React: typeof ReactTypes;
     ChannelStore: { getChannel(id: string): HtmlChannel | undefined };
+    MessageStore?: {
+      getMessage(channelId: string, messageId: string): HtmlMessage | undefined;
+      getMessages?(channelId: string): {
+        forEach(callback: (message: HtmlMessage) => void): void;
+      };
+    };
+    SelectedChannelStore?: { getChannelId(): string | undefined };
+    Parser?: VisualizationParser;
   };
   const settings = definePluginSettings({
     onlyBots: {
@@ -99,27 +115,41 @@ export function createExcordVisualizationsPlugin(
     for (const listener of listeners) listener();
   };
 
-  function Frame({ html, title }: { html: string; title: string }) {
+  function Frame({
+    html,
+    title,
+    messageId,
+  }: {
+    html: string;
+    title: string;
+    messageId?: string;
+  }) {
     const { React } = common;
     const ref = React.useRef<HTMLIFrameElement>(null);
     const [height, setHeight] = React.useState(320);
     const [srcDoc, setSrcDoc] = React.useState<string>();
+    const themeGeneration = React.useRef(0);
+    const host = () =>
+      (messageId && document.getElementById(`message-content-${messageId}`)) ||
+      ref.current?.parentElement ||
+      document.documentElement;
     React.useLayoutEffect(() => {
       // Read the mounted message's scope before any authored script runs.
-      setSrcDoc(
-        htmlDocument(
-          html,
-          readHtmlTheme(ref.current ?? document.documentElement),
-        ),
-      );
+      let mounted = true;
+      void embedHtmlFonts(readHtmlTheme(host())).then((theme) => {
+        if (mounted) setSrcDoc(htmlDocument(html, theme, readHtmlNonces()));
+      });
+      return () => {
+        mounted = false;
+      };
     }, [html]);
-    const sendTheme = () =>
-      ref.current?.contentWindow?.postMessage(
-        htmlThemeMessage(
-          readHtmlTheme(ref.current ?? document.documentElement),
-        ),
-        "*",
-      );
+    const sendTheme = () => {
+      const generation = ++themeGeneration.current;
+      void embedHtmlFonts(readHtmlTheme(host())).then((theme) => {
+        if (generation === themeGeneration.current)
+          ref.current?.contentWindow?.postMessage(htmlThemeMessage(theme), "*");
+      });
+    };
     React.useLayoutEffect(() => {
       const receive = (event: MessageEvent) => {
         if (
@@ -143,6 +173,10 @@ export function createExcordVisualizationsPlugin(
         }
       };
       const observer = new MutationObserver(sendTheme);
+      observer.observe(host(), {
+        attributes: true,
+        attributeFilter: ["class", "style", "data-theme"],
+      });
       for (
         let element = ref.current?.parentElement;
         element;
@@ -192,14 +226,21 @@ export function createExcordVisualizationsPlugin(
           height,
           border: 0,
           background: "transparent",
+          font: "inherit",
+          color: "inherit",
         }}
       />
     );
   }
 
-  function Visualization({ source }: { source: HtmlSource }) {
+  function Visualization({
+    source,
+    messageId,
+  }: {
+    source: HtmlSource;
+    messageId: string;
+  }) {
     const { React } = common;
-    const [expanded, setExpanded] = React.useState(true);
     const inline = "html" in source ? source.html : undefined;
     const url = "url" in source ? source.url : undefined;
     const [loaded, setLoaded] = React.useState<{
@@ -208,7 +249,7 @@ export function createExcordVisualizationsPlugin(
       error?: string;
     }>();
     React.useEffect(() => {
-      if (!expanded || !url) return;
+      if (!url) return;
       const controller = new AbortController();
       const timeout = setTimeout(() => {
         setLoaded({ url, error: "HTML attachment took too long to load." });
@@ -229,40 +270,86 @@ export function createExcordVisualizationsPlugin(
         controller.abort();
         clearTimeout(timeout);
       };
-    }, [url, expanded]);
+    }, [url]);
     const html = inline ?? (loaded?.url === url ? loaded?.html : undefined);
-    return (
-      <section
-        aria-label={source.title}
-        style={{ maxWidth: 1000, marginTop: 8 }}
-      >
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => setExpanded(!expanded)}
-          style={{
-            color: "var(--text-link)",
-            background: "none",
-            border: 0,
-            cursor: "pointer",
-            padding: "4px 0",
-            font: "inherit",
-            fontSize: 12,
-          }}
-        >
-          {expanded ? "Hide" : "Show"} visualization · {source.title}
-        </button>
-        {expanded &&
-          (html !== undefined ? (
-            <Frame html={html} title={source.title} />
-          ) : (
-            <p role="status">
-              {(loaded?.url === url && loaded?.error) ||
-                "Loading HTML visualization…"}
-            </p>
-          ))}
-      </section>
+    return html !== undefined ? (
+      <Frame html={html} title={source.title} messageId={messageId} />
+    ) : (
+      <p role="status">
+        {(loaded?.url === url && loaded?.error) ||
+          "Loading HTML visualization…"}
+      </p>
     );
+  }
+
+  function InlineBlock({
+    node,
+    state,
+    fallback,
+  }: {
+    node: HtmlCodeBlock;
+    state: MarkdownState;
+    fallback: () => ReactTypes.ReactNode;
+  }) {
+    const { React } = common;
+    const filters = settings.use();
+    const active = React.useSyncExternalStore(subscribe, () => running);
+    const message =
+      state.channelId && state.messageId
+        ? common.MessageStore?.getMessage(state.channelId, state.messageId)
+        : undefined;
+    if (
+      !active ||
+      !filters.enabled ||
+      !message ||
+      !allowsHtml(
+        message,
+        common.ChannelStore.getChannel(message.channel_id),
+        filters,
+      )
+    )
+      return fallback();
+    return (
+      <Frame
+        html={node.content}
+        title="HTML visualization"
+        messageId={message.id}
+      />
+    );
+  }
+
+  let installedParser: VisualizationParser | undefined;
+  let restoreCodeBlocks: (() => void) | undefined;
+  function installCodeBlocks(parser: VisualizationParser) {
+    if (
+      !running ||
+      !parser.defaultRules?.codeBlock ||
+      installedParser === parser
+    )
+      return;
+    restoreCodeBlocks?.();
+    restoreCodeBlocks = replaceHtmlCodeBlocks(
+      parser,
+      (node, state, fallback) => {
+        if (!state.messageId || !state.channelId) return fallback();
+        return common.React.createElement(InlineBlock, {
+          node,
+          state,
+          fallback,
+          key: state.key,
+        });
+      },
+    );
+    installedParser = parser;
+    // Refresh already-visible messages when the plugin is enabled in Settings.
+    const channelId = common.SelectedChannelStore?.getChannelId();
+    const updater = modules["@api/MessageUpdater"] as
+      { updateMessage(channelId: string, messageId: string): void } | undefined;
+    if (channelId && updater)
+      common.MessageStore?.getMessages?.(channelId).forEach((message) => {
+        if (htmlSources(message).some((source) => "html" in source))
+          updater.updateMessage(channelId, message.id);
+      });
   }
 
   function Accessory({ message }: { message: HtmlMessage }) {
@@ -281,8 +368,12 @@ export function createExcordVisualizationsPlugin(
       return null;
     return (
       <>
-        {htmlSources(message).map((source) => (
-          <Visualization key={`${message.id}-${source.key}`} source={source} />
+        {htmlSources({ ...message, content: "" }).map((source) => (
+          <Visualization
+            key={`${message.id}-${source.key}`}
+            source={source}
+            messageId={message.id}
+          />
         ))}
       </>
     );
@@ -294,12 +385,28 @@ export function createExcordVisualizationsPlugin(
       "Render interactive HTML code blocks and attachments, including pages exported from T3 Code.",
     authors: [{ name: "Excord", id: 0n }],
     enabledByDefault: false,
+    dependencies: ["MessageUpdaterAPI"],
     settings,
     start() {
       updateRunning(true);
+      if (common.Parser) installCodeBlocks(common.Parser);
+      else
+        (
+          modules["@webpack"] as
+            | {
+                waitFor(
+                  name: string,
+                  callback: (parser: VisualizationParser) => void,
+                ): void;
+              }
+            | undefined
+        )?.waitFor("parseTopic", installCodeBlocks);
     },
     stop() {
       updateRunning(false);
+      restoreCodeBlocks?.();
+      restoreCodeBlocks = undefined;
+      installedParser = undefined;
     },
     renderMessageAccessory: (props: { message: HtmlMessage }) =>
       common.React.createElement(Accessory, props),

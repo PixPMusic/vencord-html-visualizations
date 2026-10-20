@@ -1,6 +1,6 @@
 # ExcordVisualizations
 
-Enable **ExcordVisualizations** in Discord Settings → Plugins. It is bundled with Excord and disabled by default. It adds an interactive preview below HTML code blocks and uploaded `.html` or `.htm` files. The original message and attachment remain available. Use **Hide visualization** to unload a preview.
+Enable **ExcordVisualizations** in Discord Settings → Plugins. It is bundled with Excord and disabled by default. It replaces eligible HTML code blocks with interactive visualizations in the same position in the message. Surrounding text and other code blocks stay in place. Uploaded `.html` or `.htm` files render below the message. There are no show/hide controls or preview labels. The original file attachment remains available.
 
 The settings follow MessageLogger's multiline, comma-separated ID fields:
 
@@ -17,15 +17,20 @@ Send a complete HTML document as a file attachment, or use a fenced code block w
 
 ````markdown
 ```html
-<button onclick="this.textContent = 'Clicked'">Click me</button>
+<button id="click">Click me</button>
+<script>
+document.getElementById("click").onclick = event => {
+    event.target.textContent = "Clicked";
+};
+</script>
 ```
 ````
 
-Only complete code blocks render. There is a limit of four previews per message and 25 MiB per document, matching T3's prepared-page size limit. Attachment downloads use the Discord CDN without credentials and stop when the preview unmounts. Arbitrary URLs in message text do not render.
+Only complete code blocks render. There is a limit of four attachment previews per message and 25 MiB per document, matching T3's prepared-page size limit. Attachment downloads use the Discord CDN without credentials and stop when the preview unmounts. Arbitrary URLs in message text do not render.
 
 ## T3 Code compatibility
 
-T3's `html_render` stores a prepared HTML attachment with inlined local images and a theme bootstrap. Download that `.html` file from T3 and upload it to Discord. A bot can upload the same file bytes. The plugin accepts prepared T3 pages as well as plain HTML. It maps T3's CSS token names to the active Discord/Excord theme, including message backgrounds, text, controls, borders, status colors, chart colors, fonts, and corner radius. These follow light/dark mode, scoped themes, and QuickCSS changes without reloading the visualization. T3's exported fallback palette does not replace the host tokens. Authored HTML must use these variables to follow the theme; explicit colors in the document remain authored colors.
+T3's `html_render` stores a prepared HTML attachment with inlined local images and a theme bootstrap. Download that `.html` file from T3 and upload it to Discord. A bot can upload the same file bytes. The plugin accepts prepared T3 pages as well as plain HTML. It maps T3's CSS token names to the active Discord/Excord theme, including message backgrounds, text, controls, borders, status colors, chart colors, fonts, and corner radius. The preview inherits the surrounding chat's font, size, weight, line height, spacing, and text color by default. Discord font definitions are copied into the sandbox so gg sans can load there. These defaults and theme tokens follow light/dark mode, scoped themes, and QuickCSS changes without reloading the visualization. Explicit fonts in the document remain authored fonts. T3's exported fallback palette does not replace the host tokens. Authored HTML must use these variables to follow the theme; explicit colors in the document remain authored colors.
 
 The plugin implements the JSON-RPC messages `ui/notifications/host-context-changed`, `ui/notifications/size-changed`, and `ui/open-link`. Link requests open only while the frame has focus and the reader has just interacted with the app. Visualization URLs posted in messages are not preview inputs; send HTML attachments or code blocks.
 
@@ -37,10 +42,10 @@ The implementation follows the T3 renderer inspected at commit `0534b64`, in `pa
 
 Each page runs in an iframe with `sandbox="allow-scripts"`. It has an opaque origin and cannot access Discord's document, storage, native bridge, or Node APIs. The host accepts resize and link messages only from the corresponding frame.
 
-Inline scripts and styles work. Scripts from jsDelivr and cdnjs, Google Fonts, and HTTPS images are permitted, subject to Discord's inherited content policy. Network API requests, nested frames, forms, popups, downloads, and local filesystem access are blocked. Pages that require other remote libraries or APIs must bundle their dependencies and data. Raw local image paths must be inlined before sending; T3's prepared exports already do this.
+Inline script and style tags receive the host document's nonce so they can run under Discord's inherited content policy. Use script callbacks for interaction; inline event attributes such as `onclick="..."` are blocked by nonce-based policies. Scripts from jsDelivr and cdnjs, Discord fonts, Google Fonts, and HTTPS images are permitted, subject to Discord's inherited content policy. Network API requests, nested frames, forms, popups, downloads, and local filesystem access are blocked. Pages that require other remote libraries or APIs must bundle their dependencies and data. Raw local image paths must be inlined before sending; T3's prepared exports already do this.
 
 ## Verification
 
-`bun run check` covers filters, parsing, attachment URL and size validation, T3 message validation, and catalog registration without initialized Discord modules. `bun run build` verifies the bundled runtime. The native Electron smoke test checks that the plugin is off on a fresh profile.
+`bun run check` covers inline code replacement and restoration, nonce rewriting, filters, parsing, attachment URL and size validation, T3 message validation, and catalog registration without initialized Discord modules. `bun run build` verifies the bundled runtime. The native Electron smoke test checks that the plugin is off on a fresh profile.
 
-For browser checks, run `bun run scripts/preview-html.mts` and open its printed URL. It mounts the actual plugin with synthetic messages and settings, without a Discord account. It exposes `htmlProbe` for checking filter changes, plugin lifecycle, theme updates, and sandbox reports. This fixture does not verify Discord's current signed-in message layout or target-platform behavior.
+For browser checks, run `bun run scripts/preview-html.mts` and open its printed URL. Add `?nonce=1` to exercise an inherited nonce-based script and style policy. It mounts the actual plugin with synthetic messages, a native code-block rule, and settings, without a Discord account. It exposes `htmlProbe` for checking filter changes, plugin lifecycle, theme updates, and sandbox reports. This fixture does not verify Discord's current signed-in message layout or target-platform behavior.
