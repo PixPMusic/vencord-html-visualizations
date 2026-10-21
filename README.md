@@ -16,16 +16,15 @@ cd Vencord
 mkdir -p src/userplugins
 ```
 
-Clone this plugin directly into the userplugins directory. `PLUGIN_REPOSITORY` can be a published Git URL or an absolute path to your existing clone. For the current local checkout:
+Clone [this plugin](https://github.com/PixPMusic/vencord-html-visualizations) directly into the userplugins directory:
 
 ```sh
-PLUGIN_REPOSITORY=/Users/pixel/projects/vencord-html-visualizations
-git clone "$PLUGIN_REPOSITORY" src/userplugins/htmlVisualizations
+git clone https://github.com/PixPMusic/vencord-html-visualizations.git src/userplugins/htmlVisualizations
 pnpm install --frozen-lockfile
 pnpm build --standalone --disable-updater
 ```
 
-On another machine, replace `PLUGIN_REPOSITORY` with the plugin's published Git URL or a transferred local repository. No Vencord fork needs to be published or maintained alongside this plugin.
+The same commands work on another machine. No Vencord fork needs to be published or maintained alongside this plugin.
 
 Install the resulting build:
 
@@ -44,10 +43,10 @@ pnpm build --standalone --disable-updater
 
 ### Optional: submodule in your own Vencord fork
 
-Instead of the plugin clone above, a Vencord fork can pin the plugin as a submodule. Vencord ignores `src/userplugins`, so `-f` is needed to track this entry. Use a published plugin Git URL in place of `PLUGIN_REPOSITORY`:
+Instead of the plugin clone above, a Vencord fork can pin the plugin as a submodule. Vencord ignores `src/userplugins`, so `-f` is needed to track this entry:
 
 ```sh
-git submodule add -f "$PLUGIN_REPOSITORY" src/userplugins/htmlVisualizations
+git submodule add -f https://github.com/PixPMusic/vencord-html-visualizations.git src/userplugins/htmlVisualizations
 git add .gitmodules
 git add -f src/userplugins/htmlVisualizations
 git commit -m "Add HTML visualizations userplugin"
