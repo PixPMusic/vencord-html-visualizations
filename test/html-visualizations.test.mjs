@@ -12,7 +12,7 @@ import {
   htmlLinkRequest,
   withHtmlNonces,
 } from "../htmlFrame.ts";
-import type { HtmlTheme } from "../htmlFrame.ts";
+                                                 
 import {
   MAX_HTML_BYTES,
   MAX_VISUALIZATIONS,
@@ -23,20 +23,20 @@ import {
   isHtmlCodeBlock,
   replaceHtmlCodeBlocks,
 } from "../htmlVisualizations.ts";
-import type {
-  CodeBlockRenderer,
-  HtmlFilters,
-  HtmlMessage,
-  VisualizationParser,
-} from "../htmlVisualizations.ts";
+             
+                    
+              
+              
+                      
+                                  
 
-const filters: HtmlFilters = {
+const filters              = {
   onlyBots: false,
   allowedUsers: "",
   allowedChannels: "",
   allowedGuilds: "",
 };
-const message: HtmlMessage = {
+const message              = {
   id: "1",
   channel_id: "200",
   author: { id: "100", bot: true },
@@ -56,7 +56,7 @@ const untrustedUrls = [
   "not a URL",
 ];
 
-function fence(html: string, marker = "```", language = "html") {
+function fence(html        , marker = "```", language = "html") {
   return `${marker}${language}\n${html}\n${marker}`;
 }
 
@@ -205,7 +205,7 @@ test("downloads omit credentials, forbid redirects, and decode split UTF-8 strea
   const html = "<p>café 😀</p>";
   const bytes = new TextEncoder().encode(html);
   let offset = 0;
-  const body = new ReadableStream<Uint8Array>({
+  const body = new ReadableStream            ({
     pull(controller) {
       if (offset === bytes.length) controller.close();
       else controller.enqueue(bytes.subarray(offset, ++offset));
@@ -215,7 +215,7 @@ test("downloads omit credentials, forbid redirects, and decode split UTF-8 strea
   const signal = new AbortController().signal;
   assert.equal(await fetchHtmlAttachment(attachmentUrl, signal), html);
   assert.equal(fetch.mock.callCount(), 1);
-  const call = fetch.mock.calls[0]!;
+  const call = fetch.mock.calls[0] ;
   assert.equal(call.arguments[0], attachmentUrl);
   assert.deepEqual(call.arguments[1], { signal, credentials: "omit", redirect: "error", referrerPolicy: "no-referrer" });
 });
@@ -225,7 +225,7 @@ test("the actual stream limit stops and cancels downloads with missing or false 
     let reads = 0;
     let cancelled = false;
     const chunk = new Uint8Array(1024 * 1024);
-    const body = new ReadableStream<Uint8Array>({
+    const body = new ReadableStream            ({
       pull(controller) {
         reads++;
         controller.enqueue(reads <= 25 ? chunk : new Uint8Array(1));
@@ -247,7 +247,7 @@ test("the actual stream limit stops and cancels downloads with missing or false 
 test("an oversized Content-Length cancels the body without reading it", async (t) => {
   let reads = 0;
   let cancelled = false;
-  const body = new ReadableStream<Uint8Array>({
+  const body = new ReadableStream            ({
     pull() { reads++; },
     cancel() { cancelled = true; },
   }, { highWaterMark: 0 });
@@ -264,7 +264,7 @@ test("failed HTTP responses, missing bodies, and interrupted streams reject", as
     new Response(null),
     new Response(new ReadableStream({ start(controller) { controller.error(streamFailure); } })),
   ];
-  t.mock.method(globalThis, "fetch", async () => responses.shift()!);
+  t.mock.method(globalThis, "fetch", async () => responses.shift() );
   const signal = new AbortController().signal;
   await assert.rejects(fetchHtmlAttachment(attachmentUrl, signal), /503/);
   await assert.rejects(fetchHtmlAttachment(attachmentUrl, signal), /empty/);
@@ -304,7 +304,7 @@ test("nonce attributes are escaped while mixed-case tags and original attributes
 });
 
 test("resize messages require their JSON-RPC schema and clamp finite positive heights", () => {
-  const size = (height: unknown) => ({ jsonrpc: "2.0", method: HTML_SIZE_METHOD, params: { height } });
+  const size = (height         ) => ({ jsonrpc: "2.0", method: HTML_SIZE_METHOD, params: { height } });
   for (const [height, expected] of [[460.1, 461], [1, 80], [80, 80], [2000, 2000], [999999, 2000]]) {
     assert.equal(htmlContentHeight(size(height)), expected);
   }
@@ -315,7 +315,7 @@ test("resize messages require their JSON-RPC schema and clamp finite positive he
 });
 
 test("link requests accept absolute HTTP URLs and finite numeric or string IDs", () => {
-  const request = (url: unknown, id: unknown = "link-1") => ({ jsonrpc: "2.0", id, method: "ui/open-link", params: { url } });
+  const request = (url         , id          = "link-1") => ({ jsonrpc: "2.0", id, method: "ui/open-link", params: { url } });
   assert.deepEqual(htmlLinkRequest(request("https://example.com/docs")), { id: "link-1", url: "https://example.com/docs" });
   assert.deepEqual(htmlLinkRequest(request("http://example.com", 0)), { id: 0, url: "http://example.com/" });
   for (const url of ["javascript:alert(1)", "file:///tmp/a", "vencord://settings", "//example.com/docs", "/api/me", "https://user:secret@example.com", "https://example.com/" + "a".repeat(8192), null, 400]) {
@@ -341,7 +341,7 @@ test("iframe sandbox grants scripts without same-origin, navigation, or popup pr
 
 test("generated documents place CSP and nonce-bearing bootstrap before untrusted HTML", () => {
   const authorHtml = '<!doctype html><html><head><base href="https://evil.test/"><script>page()</script></head><body><p>chart</p></body></html>';
-  const theme: HtmlTheme = { appearance: "dark", variables: { "--foreground": "#fff" } };
+  const theme            = { appearance: "dark", variables: { "--foreground": "#fff" } };
   const document = htmlDocument(authorHtml, theme, { script: "script-key", style: "style-key" });
   const policy = `<meta http-equiv="Content-Security-Policy" content="${HTML_CSP}">`;
   assert.ok(document.startsWith(`<!doctype html><html><head><meta charset="utf-8">${policy}`));
@@ -352,7 +352,7 @@ test("generated documents place CSP and nonce-bearing bootstrap before untrusted
 
 test("the bootstrap applies escaped theme data without requiring access to the opaque frame's parent", () => {
   const hostileValue = '</script><script>throw new Error("escaped")</script>';
-  const theme: HtmlTheme = {
+  const theme            = {
     appearance: "light",
     variables: { "--foreground": "#123456", "--font-sans": "system-ui", "--unsafe": hostileValue, "not-a-token": "ignored" },
   };
@@ -360,16 +360,16 @@ test("the bootstrap applies escaped theme data without requiring access to the o
   assert.equal((html.match(/<script>/g) ?? []).length, 1);
   const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1];
   assert.ok(script);
-  const properties = new Map<string, string>();
+  const properties = new Map                ();
   const style = { textContent: "" };
-  const rootStyle = { colorScheme: "", setProperty: (key: string, value: string) => properties.set(key, value) };
+  const rootStyle = { colorScheme: "", setProperty: (key        , value        ) => properties.set(key, value) };
   const parent = new Proxy({}, { get() { throw new Error("Opaque-origin parent access"); } });
   runInNewContext(script, {
     parent,
     document: {
       head: {},
       documentElement: { style: rootStyle },
-      getElementById: (id: string) => id === "excord-html-theme" ? style : undefined,
+      getElementById: (id        ) => id === "excord-html-theme" ? style : undefined,
       addEventListener() {},
     },
     MutationObserver: class { observe() {} },
@@ -390,7 +390,7 @@ test("only nonempty HTML and html-render code blocks are eligible for replacemen
 });
 
 test("replacement preserves native rendering for other languages and denied HTML", () => {
-  const native: CodeBlockRenderer = function (this: unknown, node, output, state) {
+  const native                    = function (               node, output, state) {
     return JSON.stringify({ native: node.content, output, key: state.key, receiver: this === rule });
   };
   const rule = { react: native };
@@ -405,9 +405,9 @@ test("replacement preserves native rendering for other languages and denied HTML
 });
 
 test("deferred native fallbacks retain each block's context while Markdown reuses its state", () => {
-  const native: CodeBlockRenderer = (node, _output, state) => `${state.channelId}/${state.messageId}/${state.key}:${node.content}`;
-  const parser: VisualizationParser = { defaultRules: { codeBlock: { react: native } } };
-  const fallbacks: Array<() => ReturnType<CodeBlockRenderer>> = [];
+  const native                    = (node, _output, state) => `${state.channelId}/${state.messageId}/${state.key}:${node.content}`;
+  const parser                      = { defaultRules: { codeBlock: { react: native } } };
+  const fallbacks                                             = [];
   const restore = replaceHtmlCodeBlocks(parser, (_node, state, fallback) => {
     fallbacks.push(fallback);
     return `frame:${state.key}`;
@@ -424,14 +424,14 @@ test("deferred native fallbacks retain each block's context while Markdown reuse
 });
 
 test("parser cleanup is repeatable and never overwrites a newer installed renderer", () => {
-  const native: CodeBlockRenderer = (node) => `native:${node.content}`;
-  const parser: VisualizationParser = { defaultRules: { codeBlock: { react: native } } };
+  const native                    = (node) => `native:${node.content}`;
+  const parser                      = { defaultRules: { codeBlock: { react: native } } };
   const restore = replaceHtmlCodeBlocks(parser, () => "frame");
   restore();
   restore();
   assert.equal(parser.defaultRules.codeBlock.react, native);
   const restoreAgain = replaceHtmlCodeBlocks(parser, () => "frame");
-  const newer: CodeBlockRenderer = (node) => `newer:${node.content}`;
+  const newer                    = (node) => `newer:${node.content}`;
   parser.defaultRules.codeBlock.react = newer;
   restoreAgain();
   assert.equal(parser.defaultRules.codeBlock.react({ lang: "html", content: "chart" }, null, {}), "newer:chart");

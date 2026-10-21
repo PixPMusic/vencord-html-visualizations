@@ -44,11 +44,12 @@ pnpm build --standalone --disable-updater
 
 ### Optional: submodule in your own Vencord fork
 
-Instead of the plugin clone above, a Vencord fork can pin the plugin as a submodule. Use a published plugin Git URL in place of `PLUGIN_REPOSITORY`:
+Instead of the plugin clone above, a Vencord fork can pin the plugin as a submodule. Vencord ignores `src/userplugins`, so `-f` is needed to track this entry. Use a published plugin Git URL in place of `PLUGIN_REPOSITORY`:
 
 ```sh
-git submodule add "$PLUGIN_REPOSITORY" src/userplugins/htmlVisualizations
-git add .gitmodules src/userplugins/htmlVisualizations
+git submodule add -f "$PLUGIN_REPOSITORY" src/userplugins/htmlVisualizations
+git add .gitmodules
+git add -f src/userplugins/htmlVisualizations
 git commit -m "Add HTML visualizations userplugin"
 ```
 
