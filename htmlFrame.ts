@@ -71,7 +71,7 @@ const fontData = new Map<string, Promise<string>>();
 export async function embedHtmlFonts(theme: HtmlTheme): Promise<HtmlTheme> {
   const css = theme.fontFaces || "";
   const urls = [
-    ...new Set([...css.matchAll(/url\("([^"]+)"\)/g)].map((match) => match[1])),
+    ...new Set([...css.matchAll(/url\("([^"]+)"\)/g)].map((match) => match[1]!)),
   ];
   const embedded = new Map<string, string>();
   await Promise.all(
@@ -123,7 +123,7 @@ export async function embedHtmlFonts(theme: HtmlTheme): Promise<HtmlTheme> {
   for (const rule of sheet.cssRules) {
     if (!(rule instanceof CSSFontFaceRule)) continue;
     const data = [...rule.cssText.matchAll(/url\("([^"]+)"\)/g)]
-      .map((match) => embedded.get(match[1]))
+      .map((match) => embedded.get(match[1]!))
       .find(Boolean);
     if (!data) {
       remaining.push(rule.cssText);
@@ -288,7 +288,7 @@ export function readHtmlTheme(
   return {
     appearance,
     variables,
-    fontFaces: readChatFontFaces(variables["--font-sans"]),
+    fontFaces: readChatFontFaces(variables["--font-sans"]!),
   };
 }
 
@@ -369,19 +369,141 @@ export function readHtmlNonces() {
   return { script, style };
 }
 
-// Read only tags, skipping comments and raw script/style contents. Never parse HTML
+function isHtmlSpace(character: string | undefined) {
+  return character !== undefined && /[\t\n\f\r ]/.test(character);
+}
+
+function isHtmlTagBoundary(character: string | undefined) {
+  return character === "/" || character === ">" || isHtmlSpace(character);
+}
+
+// Quotes only open attribute values after '='; quotes in names or unquoted
+// values are ordinary characters, even in malformed HTML.
+function htmlTagEnd(html: string, index: number) {
+  let state: "before-name" | "name" | "after-name" | "before-value" | "unquoted" =
+    "before-name";
+  let quote = "";
+  for (; index < html.length; index++) {
+    const character = html[index];
+    if (quote) {
+      if (character === quote) {
+        quote = "";
+        state = "before-name";
+      }
+      continue;
+    }
+    if (character === ">") return index + 1;
+    if (state === "before-value") {
+      if (isHtmlSpace(character)) continue;
+      if (character === '"' || character === "'") quote = character;
+      else state = "unquoted";
+    } else if (state === "unquoted") {
+      if (isHtmlSpace(character)) state = "before-name";
+    } else if (isHtmlSpace(character)) {
+      if (state === "name") state = "after-name";
+    } else if (character === "/") {
+      state = "before-name";
+    } else if (character === "=" && state !== "before-name") {
+      state = "before-value";
+    } else {
+      state = "name";
+    }
+  }
+  return -1;
+}
+
+function htmlCommentEnd(html: string, index: number) {
+  // Empty comments can end before the usual '-->' / '--!>' terminator.
+  if (html[index] === ">") return index + 1;
+  if (html[index] === "-" && html[index + 1] === ">") return index + 2;
+  for (; index < html.length; index++) {
+    if (html[index] !== "-" || html[index + 1] !== "-") continue;
+    if (html[index + 2] === ">") return index + 3;
+    if (html[index + 2] === "!" && html[index + 3] === ">") return index + 4;
+  }
+  return html.length;
+}
+
+function htmlRawTextEnd(html: string, index: number, tag: string) {
+  let scriptState: "data" | "escaped" | "double-escaped" = "data";
+  let dashes = 0;
+  for (; index < html.length; index++) {
+    const character = html[index];
+    if (character === "<") {
+      dashes = 0;
+      const endName = index + 2 + tag.length;
+      const isEndTag =
+        html[index + 1] === "/" &&
+        html.slice(index + 2, endName).toLowerCase() === tag &&
+        isHtmlTagBoundary(html[endName]);
+      if (isEndTag && scriptState !== "double-escaped") {
+        const end = htmlTagEnd(html, endName);
+        return end === -1 ? html.length : end;
+      }
+      if (tag !== "script") continue;
+      if (scriptState === "double-escaped") {
+        if (isEndTag) {
+          scriptState = "escaped";
+          index = endName;
+        }
+      } else if (scriptState === "escaped") {
+        const startName = index + 1 + tag.length;
+        if (
+          html.slice(index + 1, startName).toLowerCase() === tag &&
+          isHtmlTagBoundary(html[startName])
+        ) {
+          scriptState = "double-escaped";
+          index = startName;
+        }
+      } else if (html.startsWith("<!--", index)) {
+        scriptState = "escaped";
+        dashes = 2;
+        index += 3;
+      }
+    } else if (scriptState !== "data") {
+      if (character === "-") dashes = Math.min(dashes + 1, 2);
+      else {
+        // '-->' exits both escaped script states, including double-escaped.
+        if (character === ">" && dashes === 2) scriptState = "data";
+        dashes = 0;
+      }
+    }
+  }
+  return html.length;
+}
+
+// Read only tags, skipping comments and raw text contents. Never parse HTML
 // in the host document, where image and frame requests could run outside the sandbox.
 export function withHtmlNonces(
   html: string,
   nonces: { script?: string; style?: string },
 ) {
-  const tags =
-    /<!--[\s\S]*?(?:-->|$)|<![^>]*>|<([a-z][a-z0-9:-]*)\b((?:"[^"]*"|'[^']*'|[^'">])*)>/gi;
-  let result = "";
+  const result: string[] = [];
   let last = 0;
-  for (let match; (match = tags.exec(html));) {
-    if (!match[1]) continue;
-    const tag = match[1].toLowerCase();
+  let index = 0;
+  while ((index = html.indexOf("<", index)) !== -1) {
+    if (html.startsWith("<!--", index)) {
+      index = htmlCommentEnd(html, index + 4);
+      continue;
+    }
+    const closing = html[index + 1] === "/";
+    const nameStart = index + (closing ? 2 : 1);
+    if (!/[a-z]/i.test(html[nameStart] || "")) {
+      // Declarations and invalid end tags are comments through the next '>'.
+      if (["!", "?", "/"].includes(html[index + 1] || "")) {
+        const end = html.indexOf(">", nameStart);
+        index = end === -1 ? html.length : end + 1;
+      } else index++;
+      continue;
+    }
+    let nameEnd = nameStart + 1;
+    while (nameEnd < html.length && !isHtmlTagBoundary(html[nameEnd])) nameEnd++;
+    const tag = html.slice(nameStart, nameEnd).toLowerCase();
+    const end = htmlTagEnd(html, nameEnd);
+    // At EOF an unfinished tag is discarded by the HTML tokenizer.
+    if (end === -1) break;
+    index = end;
+    if (closing) continue;
     const nonce = tag === "script" || tag === "style" ? nonces[tag] : undefined;
     if (nonce) {
       const escaped = nonce.replace(
@@ -389,10 +511,8 @@ export function withHtmlNonces(
         (value) =>
           ({ "&": "&amp;", '"': "&quot;", "<": "&lt;", ">": "&gt;" })[value]!,
       );
-      result +=
-        html.slice(last, match.index) +
-        `<${match[1]} nonce="${escaped}"${match[2]}>`;
-      last = tags.lastIndex;
+      result.push(html.slice(last, nameEnd), ` nonce="${escaped}"`);
+      last = nameEnd;
     }
     if (tag === "plaintext") break;
     if (
@@ -405,15 +525,14 @@ export function withHtmlNonces(
         "iframe",
         "noembed",
         "noframes",
+        "noscript",
       ].includes(tag)
     )
       continue;
-    const close = new RegExp(`</${tag}(?=[\\s/>])[^>]*>`, "gi");
-    close.lastIndex = tags.lastIndex;
-    const closing = close.exec(html);
-    tags.lastIndex = closing ? close.lastIndex : html.length;
+    index = htmlRawTextEnd(html, index, tag);
   }
-  return result + html.slice(last);
+  result.push(html.slice(last));
+  return result.join("");
 }
 
 export function htmlDocument(

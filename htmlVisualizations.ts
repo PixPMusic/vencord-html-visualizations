@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import type { ReactNode } from "react";
+
 export const MAX_HTML_BYTES = 25 * 1024 * 1024;
 export const MAX_VISUALIZATIONS = 4;
 
@@ -42,9 +44,10 @@ export function allowsHtml(
     filters.allowedGuilds,
   ];
   if (lists.every((list) => !list.trim())) return true;
-  const [users, channels, guilds] = lists.map(
-    (list) => new Set(list.split(/[\s,]+/).filter(Boolean)),
-  );
+  const ids = (list: string) => new Set(list.split(/[\s,]+/).filter(Boolean));
+  const users = ids(filters.allowedUsers);
+  const channels = ids(filters.allowedChannels);
+  const guilds = ids(filters.allowedGuilds);
   return !!(
     (message.author?.id && users.has(message.author.id)) ||
     channels.has(message.channel_id) ||
@@ -77,20 +80,33 @@ export function discordHtmlAttachmentUrl(value: string) {
 
 export function htmlSources(message: HtmlMessage): HtmlSource[] {
   const sources: HtmlSource[] = [];
-  // Consume every fence, including non-HTML fences, so nested examples aren't executed.
-  const fences =
-    /(?:^|\n) {0,3}(`{3,}|~{3,})([^\n]*)\n([\s\S]*?)\n {0,3}\1[\t ]*(?=\n|$)/g;
-  for (const match of (message.content ?? "").matchAll(fences)) {
-    if (!/^html(?:-render)?(?:\s|$)/i.test(match[2].trim())) continue;
-    const html = match[3].trim();
-    if (!html || new TextEncoder().encode(html).byteLength > MAX_HTML_BYTES)
-      continue;
-    sources.push({
-      key: `code-${match.index}`,
-      title: "HTML visualization",
-      html,
-    });
-    if (sources.length === MAX_VISUALIZATIONS) return sources;
+  const content = message.content ?? "";
+  let fence: { marker: string; length: number; language: string; start: number; body: number } | undefined;
+  let offset = 0;
+  // An unclosed outer example still owns its inner fences. Closers may be longer
+  // than the opener, as in Discord's Markdown parser.
+  for (const rawLine of content.split("\n")) {
+    const line = rawLine.replace(/\r$/, "");
+    if (fence) {
+      const close = /^ {0,3}(`+|~+)[\t ]*$/.exec(line)?.[1];
+      if (close?.[0] === fence.marker && close.length >= fence.length) {
+        if (/^html(?:-render)?(?:\s|$)/i.test(fence.language)) {
+          const html = content.slice(fence.body, offset).trim();
+          if (html && new TextEncoder().encode(html).byteLength <= MAX_HTML_BYTES) {
+            sources.push({ key: `code-${fence.start}`, title: "HTML visualization", html });
+            if (sources.length === MAX_VISUALIZATIONS) return sources;
+          }
+        }
+        fence = undefined;
+      }
+    } else {
+      const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      if (open && !(open[1]![0] === "`" && open[2]!.includes("`"))) {
+        fence = { marker: open[1]![0]!, length: open[1]!.length,
+          language: open[2]!.trim(), start: offset, body: offset + rawLine.length + 1 };
+      }
+    }
+    offset += rawLine.length + 1;
   }
   for (const attachment of message.attachments ?? []) {
     if (
@@ -142,4 +158,61 @@ export async function fetchHtmlAttachment(url: string, signal: AbortSignal) {
   } finally {
     await reader.cancel();
   }
+}
+
+export interface HtmlCodeBlock {
+  lang?: string;
+  content: string;
+}
+
+export interface MarkdownState {
+  channelId?: string;
+  messageId?: string;
+  key?: string | number;
+}
+
+export type CodeBlockRenderer = (
+  node: HtmlCodeBlock,
+  output: unknown,
+  state: MarkdownState,
+) => ReactNode;
+export interface VisualizationParser {
+  defaultRules: { codeBlock: { react: CodeBlockRenderer } };
+}
+
+export function isHtmlCodeBlock(node: HtmlCodeBlock) {
+  return (
+    /^(?:html|html-render)$/i.test(node.lang ?? "") &&
+    !!node.content.trim() &&
+    new TextEncoder().encode(node.content).byteLength <= MAX_HTML_BYTES
+  );
+}
+
+export function replaceHtmlCodeBlocks(
+  parser: VisualizationParser,
+  render: (
+    node: HtmlCodeBlock,
+    state: MarkdownState,
+    fallback: () => ReactNode,
+  ) => ReactNode,
+) {
+  const rule = parser.defaultRules.codeBlock;
+  const original = rule.react;
+  const wrapped: CodeBlockRenderer = function (
+    this: unknown,
+    node,
+    output,
+    state,
+  ) {
+    if (!isHtmlCodeBlock(node)) return original.call(this, node, output, state);
+    // Markdown reuses its state while walking siblings. Retain this block's key/context.
+    const savedState = { ...state };
+    return render(node, savedState, () =>
+      original.call(rule, node, output, savedState),
+    );
+  };
+  rule.react = wrapped;
+  return () => {
+    if (rule.react === wrapped) rule.react = original;
+  };
 }
